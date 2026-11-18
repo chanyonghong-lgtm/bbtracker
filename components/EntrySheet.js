@@ -3,24 +3,26 @@ import { useEffect, useState } from 'react';
 import { DICTS, useSettings } from '@/lib/i18n';
 import { fmtDate, fmtTime, toInput } from '@/lib/time';
 import {
-  AMOUNTS, COLOURS, CONSISTENCY, DEFAULT_FOODS, DIAPER_KINDS, DIAPER_LABEL, FOOD_CATS, MEALS, WARN_COLOURS,
+  AMOUNTS, COLOURS, CONSISTENCY, DEFAULT_FOODS, DIAPER_KINDS, DIAPER_LABEL, FOOD_CATS, MEALS, MILK_KINDS, MILK_PRESETS, WARN_COLOURS,
   foodIcon, foodId, foodName, guessMeal, isPoo,
 } from '@/lib/constants';
 import { DIAPER_ICON } from './Timeline';
-import { Check, Close, Spoon } from './Icons';
+import { Check, Close, Minus, Plus, Spoon } from './Icons';
 
-const TONE = { sleep: 'var(--sleep)', solids: 'var(--solids)', diaper: 'var(--diaper)' };
-const TITLE = { sleep: 'sleep', solids: 'food', diaper: 'diaper' };
+const TONE = { sleep: 'var(--sleep)', solids: 'var(--solids)', milk: 'var(--milk)', diaper: 'var(--diaper)' };
+const TITLE = { sleep: 'sleep', solids: 'food', milk: 'milk', diaper: 'diaper' };
 
-export default function EntrySheet({ type, entry, foodOptions, onClose, onSave, onDelete }) {
+export default function EntrySheet({ type, entry, foodOptions, lastMilk, onClose, onSave, onDelete }) {
   const { t } = useSettings();
   const isEdit = !!entry?.id;
+  const milkDefault = { kind: lastMilk?.kind || 'packet', ml: lastMilk?.ml || 200 };
   // A new past sleep starts as "1 hr ago until now" so it is valid without any changes
   const pastSleep = type === 'sleep' && !isEdit;
   const [start, setStart] = useState(entry?.start_at ? new Date(entry.start_at) : new Date(Date.now() - (pastSleep ? 3600000 : 0)));
   const [end, setEnd] = useState(entry?.end_at ? new Date(entry.end_at) : isEdit ? null : new Date());
   const [data, setData] = useState(() => ({
     ...(type === 'solids' ? { meal: guessMeal(), foods: [] } : {}),
+    ...(type === 'milk' ? { meal: 'milk', milk: milkDefault } : {}),
     ...(type === 'diaper' ? { kind: 'wet' } : {}),
     ...(entry?.data || {}),
   }));
@@ -30,6 +32,9 @@ export default function EntrySheet({ type, entry, foodOptions, onClose, onSave, 
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setData((d) => ({ ...d, [k]: v }));
   const toggle = (k, v) => set(k, data[k] === v ? undefined : v);
+  // Merge milk changes into the latest state so quick taps never overwrite each other
+  const patchMilk = (p) => setData((d) => ({ ...d, milk: { ...(d.milk || milkDefault), ...p } }));
+  const hasMilk = !!data.milk;
 
   // Lock page scroll behind the sheet; close with Escape
   useEffect(() => {
@@ -42,17 +47,20 @@ export default function EntrySheet({ type, entry, foodOptions, onClose, onSave, 
 
   async function submit() {
     if (saving) return;
+    const ml = Number(data.milk?.ml) || 0;
     if (!start) return setErr(t('errTime'));
     if (type === 'sleep' && end && end <= start) return setErr(t('errAfter'));
-    if (type === 'solids' && !data.foods?.length) return setErr(t('errFood'));
+    if (type === 'milk' && ml <= 0) return setErr(t('errMilk'));
+    if (type === 'solids' && !data.foods?.length && ml <= 0) return setErr(t('errFood'));
     const clean = { ...data };
     Object.keys(clean).forEach((k) => clean[k] === undefined && delete clean[k]);
+    if (clean.milk) { if (ml > 0) clean.milk = { kind: clean.milk.kind || 'packet', ml }; else delete clean.milk; }
     if (type === 'diaper' && !isPoo(clean.kind)) { delete clean.consistency; delete clean.colour; }
     setErr('');
     setSaving(true);
     await onSave({
       ...(entry || {}),
-      type,
+      type: type === 'milk' ? 'solids' : type, // milk is stored as a food entry
       start_at: start.toISOString(),
       end_at: type === 'sleep' && end ? end.toISOString() : null,
       data: clean,
@@ -80,6 +88,8 @@ export default function EntrySheet({ type, entry, foodOptions, onClose, onSave, 
               </div>
             </div>
           )}
+
+          {type === 'milk' && <MilkPicker milk={data.milk} onChange={patchMilk} />}
 
           {type === 'diaper' && (
             <div className="sec">
@@ -111,6 +121,21 @@ export default function EntrySheet({ type, entry, foodOptions, onClose, onSave, 
                 ))}
               </div>
             </div>
+          )}
+
+          {type === 'solids' && (
+            hasMilk ? (
+              <>
+                <MilkPicker milk={data.milk} onChange={patchMilk} title={t('milkWithMeal')} />
+                <div className="sec center-row">
+                  <button className="linkbtn" onClick={() => set('milk', undefined)}>{t('removeMilk')}</button>
+                </div>
+              </>
+            ) : (
+              <div className="sec center-row">
+                <button className="btn" onClick={() => set('milk', milkDefault)}>{t('addMilk')}</button>
+              </div>
+            )
           )}
 
           {type === 'diaper' && isPoo(data.kind) && (
@@ -163,6 +188,41 @@ export default function EntrySheet({ type, entry, foodOptions, onClose, onSave, 
         </div>
       </div>
     </div>
+  );
+}
+
+function MilkPicker({ milk, onChange, title }) {
+  const { t } = useSettings();
+  const m = milk || { kind: 'packet', ml: 200 };
+  const ml = m.ml === '' ? '' : Number(m.ml) || 0;
+  const setMl = (v) => onChange({ ml: v === '' ? '' : Math.max(0, Math.min(1000, Math.round(Number(v) || 0))) });
+  return (
+    <>
+      <div className="sec">
+        <div className="sec-label">{title || t('milkType')}</div>
+        <div className="milk-kinds">
+          {MILK_KINDS.map((k) => (
+            <button key={k} className="choice" aria-pressed={m.kind === k} onClick={() => onChange({ kind: k })}>{t(`milk_${k}`)}</button>
+          ))}
+        </div>
+      </div>
+      <div className="sec">
+        <label className="sec-label" htmlFor="milk-ml">{t('milkAmount')}</label>
+        <div className="stepper">
+          <button className="step-btn" aria-label={t('less')} onClick={() => setMl((Number(ml) || 0) - 10)}><Minus size={26} /></button>
+          <div className="step-val">
+            <input id="milk-ml" type="number" inputMode="numeric" min="0" max="1000" value={ml} onChange={(e) => setMl(e.target.value)} onFocus={(e) => e.target.select()} />
+            <span>{t('ml')}</span>
+          </div>
+          <button className="step-btn" aria-label={t('more')} onClick={() => setMl((Number(ml) || 0) + 10)}><Plus size={26} /></button>
+        </div>
+        <div className="choice-row presets">
+          {MILK_PRESETS.map((p) => (
+            <button key={p} className="choice" aria-pressed={Number(ml) === p} onClick={() => setMl(p)}>{p}</button>
+          ))}
+        </div>
+      </div>
+    </>
   );
 }
 

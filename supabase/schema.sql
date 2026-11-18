@@ -1,4 +1,5 @@
 -- Tot Tracker schema. Run once in Supabase: SQL Editor > New query > paste > Run.
+-- Milk is stored inside food entries (type 'solids'), so adding milk tracking needed no schema change.
 
 create table public.profiles (
   id uuid primary key references auth.users on delete cascade,
@@ -55,3 +56,8 @@ create policy "family entries"  on public.entries  for all to authenticated usin
 
 -- Live sync between family phones
 alter publication supabase_realtime add table public.entries;
+
+-- Users added before this script ran have no profile yet: create them
+insert into public.profiles (id, display_name)
+select id, split_part(email, '@', 1) from auth.users
+on conflict (id) do nothing;

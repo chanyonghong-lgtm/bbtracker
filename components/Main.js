@@ -3,13 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useSettings } from '@/lib/i18n';
 import { addDays, ageText, fmtDate, fmtDur, fmtTime, startOfDay, startOfWeek } from '@/lib/time';
-import { DEFAULT_FOODS, DIAPER_LABEL, foodId } from '@/lib/constants';
+import { DEFAULT_FOODS, DIAPER_LABEL, foodId, isMilkOnly, milkMl } from '@/lib/constants';
 import Home from './Home';
 import History from './History';
 import Trends from './Trends';
+import Tips from './Tips';
 import Account from './Account';
 import EntrySheet from './EntrySheet';
-import { Calendar, Chart, People, Today } from './Icons';
+import { Bulb, Calendar, Chart, People, Today } from './Icons';
 
 const byStart = (a, b) => (a.start_at < b.start_at ? -1 : a.start_at > b.start_at ? 1 : 0);
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -23,13 +24,14 @@ export default function Main({ session }) {
   const [profiles, setProfiles] = useState({});
   const [entries, setEntries] = useState([]);
   const [day, setDay] = useState(startOfDay(new Date()));
-  const [sheet, setSheet] = useState(null); // { type, entry? }
-  const [toast, setToast] = useState(null); // { text, actions: [{label, fn}] }
+  const [sheet, setSheet] = useState(null); // { type: 'sleep'|'solids'|'milk'|'diaper', entry? }
+  const [toast, setToast] = useState(null);
   const toastTimer = useRef();
   const lastTap = useRef(0);
+  const [, tick] = useState(0);
+
   // Ignore a second tap within 1.2s so a double tap never logs twice
   const guard = () => { const n = Date.now(); if (n - lastTap.current < 1200) return false; lastTap.current = n; return true; };
-  const [, tick] = useState(0);
 
   useEffect(() => {
     const iv = setInterval(() => tick((n) => n + 1), 30000);
@@ -137,10 +139,10 @@ export default function Main({ session }) {
 
   async function saveFromSheet(entry) {
     const row = await save(entry);
-    if (row) {
-      setSheet(null);
-      showToast(t('saved'));
-    }
+    if (!row) return;
+    setSheet(null);
+    if (isMilkOnly(row) && !entry.created_at) showToast(t('milkLogged', { ml: milkMl(row) }), [undoNew(row)]);
+    else showToast(t('saved'));
   }
 
   // Foods ranked by how often they were logged, then built-in defaults
@@ -155,6 +157,12 @@ export default function Main({ session }) {
     return [...counts.values()].sort((a, b) => b.n - a.n || (b.last > a.last ? 1 : -1)).map((x) => x.food);
   }, [entries]);
 
+  // Most recent milk, used to pre-fill the next one (same type and amount)
+  const lastMilk = useMemo(() => {
+    for (let i = entries.length - 1; i >= 0; i--) if (milkMl(entries[i])) return entries[i].data.milk;
+    return null;
+  }, [entries]);
+
   if (!childLoaded) return <div className="center"><div className="spinner" aria-label="Loading" /></div>;
   if (!child) return <SetupChild onDone={loadBasics} />;
 
@@ -162,8 +170,10 @@ export default function Main({ session }) {
     ['today', Today, t('today')],
     ['history', Calendar, t('history')],
     ['trends', Chart, t('trends')],
+    ['tips', Bulb, t('tips')],
     ['family', People, t('family')],
   ];
+  const go = (id) => { setTab(id); window.scrollTo(0, 0); };
 
   return (
     <div className="app">
@@ -176,16 +186,17 @@ export default function Main({ session }) {
       </header>
 
       <main>
-        {tab === 'today' && <Home entries={entries} profiles={profiles} quick={quick} onOpen={setSheet} />}
+        {tab === 'today' && <Home entries={entries} profiles={profiles} child={child} quick={quick} onOpen={setSheet} onTips={() => go('tips')} />}
         {tab === 'history' && <History entries={entries} day={day} setDay={setDay} profiles={profiles} onOpen={setSheet} />}
         {tab === 'trends' && <Trends entries={entries} />}
+        {tab === 'tips' && <Tips child={child} onFamily={() => go('family')} />}
         {tab === 'family' && <Account uid={uid} email={session.user.email} child={child} profiles={profiles} onChange={loadBasics} />}
       </main>
 
       <nav className="nav" aria-label="Main">
         <div>
           {tabs.map(([id, Icon, label]) => (
-            <button key={id} className={tab === id ? 'on' : ''} aria-current={tab === id ? 'page' : undefined} onClick={() => { setTab(id); window.scrollTo(0, 0); }}>
+            <button key={id} className={tab === id ? 'on' : ''} aria-current={tab === id ? 'page' : undefined} onClick={() => go(id)}>
               <Icon size={26} />
               <span>{label}</span>
             </button>
@@ -197,7 +208,7 @@ export default function Main({ session }) {
         <div className="toast" role="status" key={toast.key}>
           <span>{toast.text}</span>
           {toast.actions.map((a, i) => (
-            <button key={i} onClick={() => { a.fn(); }}>{a.label}</button>
+            <button key={i} onClick={() => a.fn()}>{a.label}</button>
           ))}
         </div>
       )}
@@ -207,6 +218,7 @@ export default function Main({ session }) {
           type={sheet.type}
           entry={sheet.entry}
           foodOptions={foodOptions}
+          lastMilk={lastMilk}
           onClose={() => setSheet(null)}
           onSave={saveFromSheet}
           onDelete={remove}
